@@ -491,7 +491,7 @@ class SongTwister:
         self.build_bar_sequence()
 
     def make_seq(self):
-        sequence = models.BarSequence(
+        sequence = models.Sequence(
             time=models.Duration(self.audio_length_ms),
             bpm=self.bpm,
             time_signature=models.TimeSignature(self.beats_per_bar)

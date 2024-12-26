@@ -1,8 +1,14 @@
 from dataclasses import dataclass, InitVar, field
 from typing import Optional, Union, Self
 import logging
+import uuid
+
+from audiosegment_patch import PatchedAudioSegment as AudioSegment
 
 logger = logging.getLogger('songtwister')
+
+def make_identifier():
+    return str(uuid.uuid4())
 
 
 @dataclass
@@ -67,6 +73,19 @@ class Duration:
     def _matches(self):
         return [x is not None for x in (self.start, self.end, self.length)]
 
+    def within_duration(self, duration: Self, allow_overflow=True) -> bool:
+        # Return True if the duration start point exists within self's duration, and the same for the end time.
+        return duration.start >= self.start and duration.end <= self.end
+
+
+    def covers_time(self, timecode: Union[float, str]) -> bool:
+        return self.start <= timecode <= self.end
+
+    def after_time(self, timecode: Union[float, str]) -> bool:
+        return self.start <= timecode
+
+    def before_time(self, timecode: Union[float, str]) -> bool:
+        return timecode <= self.end
 
 @dataclass
 class TimeSignature:
@@ -206,6 +225,7 @@ class BPM:
 @dataclass
 class SequenceItem:
     time: Duration
+    identifier: str = field(default_factory=make_identifier)
     section: Optional[str] = None
     tags: set[str] = field(default_factory=set)
 
@@ -272,15 +292,51 @@ class FreeTime(SequenceItem):
 
 
 @dataclass
-class BarSequence:
-    time: Duration
-    bars: list[Bar, FreeTime] = field(default_factory=list)
+class Sequence:
+    identifier: str = field(default_factory=make_identifier)
+    time: Optional[Duration] = None
+    sequence: list[Bar, FreeTime] = field(default_factory=list)
     bpm: Optional[int] = None
     time_signature: Optional[TimeSignature] = None
+    audio: InitVar[AudioSegment | None] = None
 
-    def get_unsequenced(self):
-        if not self.bars:
-            pass
+    def __post_init__(self, audio):
+        if not self.time:
+            if audio is None:
+                logger.warning(
+                    "Initializing sequence without audio. Length will be 0")
+                audio = AudioSegment.empty()
+            self.time = Duration(full_duration=len(audio))
+        if not self.sequence:
+            self.sequence.append(FreeTime(time=self.time))
+        
+
+    def get_items(
+            self,
+            start_time: Union[float, int, None] = None,
+            end_time: Union[float, int, None] = None,
+            length: Union[float, int, None] = None,
+            identifiers: Optional[list[str]] = None,
+            section: Optional[str] = None,
+            tags: Optional[list[str]] = None):
+        timeframe = Duration(full_duration=self.time.length, start=start_time,
+                             end=end_time, length=length)
+        print(timeframe)
+        selected = []
+        for item in self.sequence:
+            if not item.time.within_duration(timeframe):
+                continue
+            if identifiers and item.identifier not in identifiers:
+                continue
+            if section and item.section != section:
+                continue
+            if tags and not any([tag for tag in tags if tag in item.tags]):
+                continue
+            selected.append(item)
+        return selected
+
+    def get_after(self, item: Union[Bar, FreeTime]) -> list:
+        return self.get_items(start_time=item.time.end)
 
     def add_free_time(self, length: Union[int, float]):
         pass
@@ -301,3 +357,24 @@ class BarSequence:
     # def from_audiosegment(cls, audiosegment, **kwargs) -> Self:
     #     duration = Duration(full_duration=len(audiosegment))
     #     return BarSequence(time=duration, **kwargs)
+
+"""
+
+A SongTwister object has a Sequence that describes the content of the audio.
+In its simplest form, a Sequence has one item in it, a FreeTime filling the entire length of the audio.
+Parts of the FreeTime may be replaced by Bars, each with a bpm and time signature defined. The Sequence may have default values set
+that Bars use if nothing else is defined.
+
+We make a sequence object for the songs structure:
+    sequence = Sequence(audio=self.audio)
+
+Now this just represents and unstructured chunk of audio.
+
+Now we want to define the structure. We want to add bars (with identical or varying BPMs and time signatures) and free time parts, such as a prefix and a suffix.
+
+We need to be able to perform modifications in the sequence. We must be allowed to delete items, replace them, insert items before or after a given point, and we need all the items following to automatically have their timing adjusted.
+
+We need to be able to select an excerpt, a subset of items or time.
+
+
+"""
